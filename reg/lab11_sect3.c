@@ -17,6 +17,18 @@
  * Returns a passively opened socket or -1 on error. Caller is responsible for calling
  * accept and closing the socket.
  */
+
+
+ /*
+ 1. Not allowd to use FD_SETSIZE
+ 2. only one selct call is allowed in the program
+
+ the registery should be able to handle join, publish search from multiple peers
+do not use a timeout - Null for that argument for the timeout on the select call 
+keep track of the state for the peers
+keep track of peer IP address and port number
+getpeername() function to get the address and port number of a connected socket / peer 
+ */
 int bind_and_listen( const char *service );
 
 /*
@@ -85,7 +97,7 @@ int main(void){
 
 int find_max_fd(const fd_set *fs) {
 	int ret = 0;
-	for(int i = FD_SETSIZE-1; i>=0 && ret==0; --i){
+	for(int i = FD_SETSIZE-1; i>=0 && ret==0; --i){   #Not allowed to use FD_SETSIZE
 		if( FD_ISSET(i, fs) ){
 			ret = i;
 		}

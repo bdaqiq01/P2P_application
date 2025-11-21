@@ -1,0 +1,135 @@
+#!/usr/bin/env -S python3 -B
+
+import os
+import sys
+import random
+import common
+
+################### Defined constants ##################################
+# Filenames provided as part of the assignment and available while building
+# or executing. Should not be submitted to the script. Directories are
+# copied recursively.
+BASE_FILES = ['libnet_socket.a', 'net_socket.h']
+
+# Executable files provided as part of the assignment. Should not be
+# submitted to the script.
+BASE_EXECUTABLES = ['p4_peer']
+
+# All executables that must be generated during compilation.
+REQD_EXECUTABLES = ['registry']
+
+def main():
+    do_debug = common.initial_setup(BASE_FILES, BASE_EXECUTABLES, REQD_EXECUTABLES)
+
+    REGISTRY_TIMEOUT = 2 # How long the registry waits for peer commands
+
+    SHARED_DIR = 'SharedFiles' # Directory of files PUBLISHed by peer
+
+    STUDENT_DIR = 'student' # Directory for student executables and files
+
+    # Range of files published by each solution peer
+    MIN_FILES = 4
+    MAX_FILES = 10
+
+    # Range of solution peers to start
+    MIN_PEERS = 3
+    MAX_PEERS = 5
+
+    # Number of random searches to perform during tests
+    NUM_SEARCH = random.randint(5, 10)
+
+    # Only one executable
+    registry_exe = REQD_EXECUTABLES[0]
+
+    # Host running registry
+    #host = 'localhost'
+    host = 'ecc-linux2.csuchico.edu'
+
+    # Random TCP port number
+    port = common.get_random_port()
+
+    peer_exe = BASE_EXECUTABLES[0]
+
+    num_peers = random.randint(MIN_PEERS, MAX_PEERS)
+    peers = []
+
+    if do_debug:
+        common.subbanner('WARNING: Debug output enabled. Program output may occur out of order.')
+
+    try:
+        common.banner('Starting registry')
+        reg = common.start_registry(registry_exe, port, REGISTRY_TIMEOUT, soln=False, do_debug=do_debug)
+
+        common.banner('Performing single peer tests')
+        common.subbanner('Starting peer')
+        peer_id = common.get_random_id()
+        peer_dir = common.random_files(1)[0]
+        files = common.random_files(random.randint(MIN_FILES, MAX_FILES))
+        p = common.start_peer(peer_exe, host, port, peer_id, peer_dir, files, SHARED_DIR, soln=True, do_debug=do_debug)
+
+        # JOIN test
+        (ip, peer_port) = common.soln_perform_join(reg, p, peer_id)
+
+        # PUBLISH test
+        common.soln_perform_publish(reg, p, files)
+
+        # Save peer info
+        first_peer = [p, peer_id, peer_dir, files, ip, peer_port]
+
+        common.banner('Performing multiple peer tests')
+
+        # Start the solution peers
+        common.subbanner(f'Starting {num_peers-1} peers')
+        for _ in range(num_peers-1):
+            peer_id = common.get_random_id()
+            peer_dir = common.random_files(1)[0]
+            files = common.random_files(random.randint(MIN_FILES, MAX_FILES))
+            p = common.start_peer(peer_exe, host, port, peer_id, peer_dir, files, SHARED_DIR, soln=True, do_debug=do_debug)
+            peers.append([p, peer_id, peer_dir, files])
+
+        # Perform JOIN tests
+        random.shuffle(peers)
+        for p in peers:
+            (ip, peer_port) = common.soln_perform_join(reg, p[0], p[1])
+            p.extend([ip, peer_port])
+
+        # Perform PUBLISH tests
+        random.shuffle(peers)
+        for p in peers:
+            common.soln_perform_publish(reg, p[0], p[3])
+
+        # Perform SEARCH tests
+        # Add first peer for SEARCH tests
+        peers.extend([first_peer])
+        for _ in range(NUM_SEARCH):
+            (src, tgt) = random.sample(peers, 2)
+            common.soln_perform_search(reg, src[0], random.sample(tgt[3],1)[0], tgt[1], tgt[4], tgt[5])
+            # Only SEARCH for existing files
+
+        common.banner('Closing peers')
+        for p in peers:
+            common.soln_perform_exit(reg, p[0])
+
+    except common.TestError as err:
+        common.perror(str(err))
+        sys.exit()
+    except (common.EndTestsException, common.AbnormalTerminationError, common.DuplicateCommandError, common.InvalidCommandError):
+        sys.exit()
+
+    common.banner('All tests passed.')
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print('\nTests interrupted by user. Not all tests have completed.')
+        sys.exit()
+    except common.InternalError as err:
+        print(err)
+        sys.exit()
+    except Exception as err:
+        ierr = common.InternalError(f'Last chance except clause ({err})')
+        print(ierr)
+        sys.exit()
+
+# vim: set filetype=python:
