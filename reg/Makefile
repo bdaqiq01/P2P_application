@@ -1,27 +1,11 @@
-# Basira Daqiq
-# Steven Correa
-# Makefile for P2P Networking Project
-
-# Compiler and flags
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c17 -g
+CFLAGS = -Wall -std=c99
+TARGET = registry
 
-# Target executable
-PEER_TARGET = peer
+all: $(TARGET)
 
-# Source file
-PEER_SRC = peer.c
+$(TARGET): registry.c
+	$(CC) $(CFLAGS) -o $(TARGET) registry.c
 
-# Default target
-all: $(PEER_TARGET)
-
-# Build peer executable
-$(PEER_TARGET): $(PEER_SRC)
-	$(CC) $(CFLAGS) -o $@ $<
-
-# Clean build artifacts
 clean:
-	rm -f $(PEER_TARGET)
-
-# Phony targets
-.PHONY: all clean
+	rm -f $(TARGET)

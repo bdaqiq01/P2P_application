@@ -1,0 +1,292 @@
+// registry.c
+// EECE 446 Program 4 - P2P Registry
+// [Your Names], Fall 2025
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#include <errno.h>
+
+#define MAX_PEERS 5
+#define MAX_FILES 10
+#define MAX_FILENAME_LEN 101
+#define BUFFER_SIZE 2048
+
+struct peer_entry {
+    uint32_t id;
+    int socket_fd;
+    char files[MAX_FILES][MAX_FILENAME_LEN];
+    int num_files;
+    struct sockaddr_in addr;
+    int joined;  // Has this peer sent JOIN?
+};
+
+struct peer_entry peers[MAX_PEERS];
+int peer_count = 0;
+
+// Find peer by socket
+struct peer_entry* find_peer_by_socket(int sockfd) {
+    for (int i = 0; i < peer_count; i++) {
+        if (peers[i].socket_fd == sockfd) {
+            return &peers[i];
+        }
+    }
+    return NULL;
+}
+
+// Remove peer by socket
+void remove_peer(int sockfd) {
+    for (int i = 0; i < peer_count; i++) {
+        if (peers[i].socket_fd == sockfd) {
+            // Shift remaining peers down
+            for (int j = i; j < peer_count - 1; j++) {
+                peers[j] = peers[j + 1];
+            }
+            peer_count--;
+            return;
+        }
+    }
+}
+
+// Handle JOIN message
+void handle_join(int sockfd, uint8_t *msg, int len) {
+    if (len < 5) return;
+    
+    uint32_t peer_id_net;
+    memcpy(&peer_id_net, msg + 1, 4);
+    uint32_t peer_id = ntohl(peer_id_net);
+    
+    // Get peer's address using getpeername
+    struct sockaddr_in peer_addr;
+    socklen_t addr_len = sizeof(peer_addr);
+    if (getpeername(sockfd, (struct sockaddr*)&peer_addr, &addr_len) < 0) {
+        perror("getpeername");
+        return;
+    }
+    
+    // Find or create peer entry
+    struct peer_entry *peer = find_peer_by_socket(sockfd);
+    if (!peer) {
+        if (peer_count >= MAX_PEERS) {
+            fprintf(stderr, "Max peers reached\n");
+            return;
+        }
+        peer = &peers[peer_count++];
+        peer->socket_fd = sockfd;
+        peer->num_files = 0;
+    }
+    
+    peer->id = peer_id;
+    peer->addr = peer_addr;
+    peer->joined = 1;
+    
+    printf("TEST] JOIN %u\n", peer_id);
+}
+
+// Handle PUBLISH message
+void handle_publish(int sockfd, uint8_t *msg, int len) {
+    if (len < 5) return;
+    
+    struct peer_entry *peer = find_peer_by_socket(sockfd);
+    if (!peer || !peer->joined) return;
+    
+    uint32_t count_net;
+    memcpy(&count_net, msg + 1, 4);
+    uint32_t count = ntohl(count_net);
+    
+    if (count > MAX_FILES) count = MAX_FILES;
+    
+    // Parse null-terminated filenames
+    int pos = 5;
+    int file_idx = 0;
+    while (pos < len && file_idx < (int)count) {
+        int name_len = 0;
+        while (pos + name_len < len && msg[pos + name_len] != 0) {
+            name_len++;
+        }
+        
+        if (pos + name_len < len && name_len > 0 && name_len < MAX_FILENAME_LEN) {
+            memcpy(peer->files[file_idx], msg + pos, name_len + 1);
+            file_idx++;
+        }
+        
+        pos += name_len + 1;
+    }
+    
+    peer->num_files = file_idx;
+    
+    // Print output
+    printf("TEST] PUBLISH %d", file_idx);
+    for (int i = 0; i < file_idx; i++) {
+        printf(" %s", peer->files[i]);
+    }
+    printf("\n");
+}
+
+// Handle SEARCH message
+void handle_search(int sockfd, uint8_t *msg, int len) {
+    if (len < 2) return;
+    
+    // Extract filename (null-terminated)
+    char filename[MAX_FILENAME_LEN];
+    int name_len = 0;
+    while (name_len < len - 1 && name_len < MAX_FILENAME_LEN - 1 && msg[1 + name_len] != 0) {
+        filename[name_len] = msg[1 + name_len];
+        name_len++;
+    }
+    filename[name_len] = '\0';
+    
+    // Search for file
+    struct peer_entry *result = NULL;
+    for (int i = 0; i < peer_count; i++) {
+        if (!peers[i].joined) continue;
+        for (int j = 0; j < peers[i].num_files; j++) {
+            if (strcmp(peers[i].files[j], filename) == 0) {
+                result = &peers[i];
+                break;
+            }
+        }
+        if (result) break;
+    }
+    
+    // Build response (10 bytes)
+    uint8_t response[10];
+    if (result) {
+        uint32_t peer_id_net = htonl(result->id);
+        uint32_t ip_net = result->addr.sin_addr.s_addr;  // Already in network order
+        uint16_t port_net = result->addr.sin_port;        // Already in network order
+        
+        memcpy(response, &peer_id_net, 4);
+        memcpy(response + 4, &ip_net, 4);
+        memcpy(response + 8, &port_net, 2);
+        
+        // Convert to host order for printing
+        uint32_t ip_host = ntohl(ip_net);
+        uint16_t port_host = ntohs(port_net);
+        
+        // Format IP as dotted decimal
+        char ip_str[INET_ADDRSTRLEN];
+        struct in_addr addr;
+        addr.s_addr = htonl(ip_host);
+        inet_ntop(AF_INET, &addr, ip_str, sizeof(ip_str));
+        
+        printf("TEST] SEARCH %s %u %s:%u\n", filename, result->id, ip_str, port_host);
+    } else {
+        memset(response, 0, 10);
+        printf("TEST] SEARCH %s 0 0.0.0.0:0\n", filename);
+    }
+    
+    // Send response
+    if (send(sockfd, response, 10, 0) != 10) {
+        perror("send search response");
+    }
+}
+
+int main(int argc, char *argv[]) {
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <port>\n", argv[0]);
+        exit(1);
+    }
+    
+    int listen_fd;
+    struct sockaddr_in serv_addr;
+    
+    // Create listening socket
+    listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (listen_fd < 0) {
+        perror("socket");
+        exit(1);
+    }
+    
+    // Allow port reuse
+    int opt = 1;
+    if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt");
+    }
+    
+    // Bind
+    memset(&serv_addr, 0, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = INADDR_ANY;
+    serv_addr.sin_port = htons(atoi(argv[1]));
+    
+    if (bind(listen_fd, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
+        perror("bind");
+        exit(1);
+    }
+    
+    // Listen
+    if (listen(listen_fd, 5) < 0) {
+        perror("listen");
+        exit(1);
+    }
+    
+    // Setup select
+    fd_set master_set, read_set;
+    FD_ZERO(&master_set);
+    FD_SET(listen_fd, &master_set);
+    int max_fd = listen_fd;
+    
+    // Main loop
+    while (1) {
+        read_set = master_set;
+        
+        if (select(max_fd + 1, &read_set, NULL, NULL, NULL) < 0) {
+            perror("select");
+            exit(1);
+        }
+        
+        // Check all file descriptors
+        for (int fd = 0; fd <= max_fd; fd++) {
+            if (!FD_ISSET(fd, &read_set)) continue;
+            
+            if (fd == listen_fd) {
+                // Accept new connection
+                struct sockaddr_in cli_addr;
+                socklen_t cli_len = sizeof(cli_addr);
+                int new_fd = accept(listen_fd, (struct sockaddr*)&cli_addr, &cli_len);
+                
+                if (new_fd < 0) {
+                    perror("accept");
+                    continue;
+                }
+                
+                FD_SET(new_fd, &master_set);
+                if (new_fd > max_fd) {
+                    max_fd = new_fd;
+                }
+            } else {
+                // Handle peer message
+                uint8_t buffer[BUFFER_SIZE];
+                int n = recv(fd, buffer, BUFFER_SIZE, 0);
+                
+                if (n <= 0) {
+                    // Connection closed or error
+                    close(fd);
+                    FD_CLR(fd, &master_set);
+                    remove_peer(fd);
+                } else {
+                    // Process message based on type
+                    uint8_t msg_type = buffer[0];
+                    
+                    if (msg_type == 0) {
+                        handle_join(fd, buffer, n);
+                    } else if (msg_type == 1) {
+                        handle_publish(fd, buffer, n);
+                    } else if (msg_type == 2) {
+                        handle_search(fd, buffer, n);
+                    }
+                }
+            }
+        }
+    }
+    
+    close(listen_fd);
+    return 0;
+}
