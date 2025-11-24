@@ -1,6 +1,7 @@
 // registry.c
 // EECE 446 Program 4 - P2P Registry
-// [Your Names], Fall 2025
+// Aaron Robinson Almazan
+// Basira Daqiq 
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,7 +19,8 @@
 #define MAX_FILENAME_LEN 101
 #define BUFFER_SIZE 2048
 
-struct peer_entry {
+struct peer_entry
+{
     uint32_t id;
     int socket_fd;
     char files[MAX_FILES][MAX_FILENAME_LEN];
